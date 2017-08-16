@@ -2,7 +2,6 @@ make_users = function(swm,surv=NULL){
   
   users = list()
   user = list()
-  #  ids = intersect(swm[[1]],surv$SWM.ID)
   ids = unique(swm[[1]])
   
   for(i in 1:length(ids)){
@@ -11,27 +10,11 @@ make_users = function(swm,surv=NULL){
     user = list()
     user$id=ids[i]
     
-    #    surv_row = surv[surv$SWM.ID==ids[i],]
-    #    user$mail = surv_row$Email
-    #    user$members = as.numeric(as.character(surv_row$How.many.members.are.there.in.your.household..1))
-    #    user$showers_no = as.numeric(as.character(surv_row$How.many.hand.showers.are.there.in.your.home.))
-    #    user$apartment_size = parse_apartment_size(surv_row$What.is.the.size.of.your.appartment.house.in.square.meters.feet.)
-    #    user$child = as.numeric(as.character(surv_row$Is.there.any.minor.in.your.home.))
-    #    user$male_rate = (as.numeric(as.character(surv_row$How.many.of.your.household.members.are.males.))-user$child)/user$members
-    #    user$income = parse_income(surv_row$What.is.approximately.your.yearly.household.income.before.tax.)
-    #    user$own_house = parse_rent(surv_row$Do.you.own.or.lease.your.residence.)
-    #    user$consider = parse_consider(surv_row$I.consider.my.household.s.water.consumption.to.be.)
-    
-    #    user$cons = diff( rev(swm[[3]][swm[[1]]==user$id]) )
-    #    user$cons = swm[[4]][swm[[1]]==user$id]
-    #    user$dates = as.POSIXct(rev(swm[[2]][swm[[1]]==user$id])[-1],format="%d/%m/%Y %H:%M:%S",tz="CET")
-    #    user$days = split_days(user$dates)
     
     swm_slice = swm[swm[[1]]==user$id,]
     user$aggr_cons = rev(swm_slice[[3]])
     user$dates = as.POSIXct(rev(swm_slice[[2]]),format="%d/%m/%Y %H:%M:%S",tz="CET")
     user$hour_cons = rev(swm_slice[[4]])
-    # user$days = split_days(user$dates)
     
     users[[i]] = user
     
@@ -668,5 +651,52 @@ single_basel2 = function(targ,phases,seas,feat_type){
     basel2_p6_s=0
   
   return(c(targ_p1,targ_p2,targ_p3,targ_p4,targ_p5,targ_p6,basel2_p1_s,basel2_p2_s,basel2_p3_s,basel2_p4_s,basel2_p5_s,basel2_p6_s))
+  
+}
+
+get_stj_quarters = function(stj){
+  ids = unique(stj$Last.meter.number)
+  quart = c()
+  for(id in ids[-length(ids)]){
+    us = stj[stj$Last.meter.number==id,]
+    quart = c(quart, rev(us$Consumption[c(1,2,3,4,5,6,7,8,9,10,11,12,13,14)]))
+  }
+  return(t(matrix(quart,nrow=14)))
+}
+
+stj_compare_quarts = function(quarts,r=10000){
+  
+  quarts = quarts*1000
+  
+  tot = colSums(quarts)
+  cons_b = sum(tot[2:6])/15
+  cons_i = sum(tot[10:14])/15
+  cons_d = (cons_b-cons_i)/cons_b
+  
+  lot_b = c()
+  lot_i = c()
+  for(i in 1:r){
+    buf = quarts[sample(1:nrow(quarts),replace=TRUE),]
+    tot = colSums(buf)
+    lot_b = c( lot_b, sum(tot[2:6])/15 )
+    lot_i = c( lot_i, sum(tot[10:14])/15 )
+  }
+  
+  lot_d = (lot_b-lot_i)/lot_b
+  
+  slot_b = sort(lot_b)
+  slot_i = sort(lot_i)
+  slot_d = sort(lot_d)
+  
+  b_down = slot_b[0.025*r]
+  b_up = slot_b[0.975*r]
+  
+  i_down = slot_i[0.025*r]
+  i_up = slot_i[0.975*r]
+  
+  d_down = slot_d[0.025*r]
+  d_up = slot_d[0.975*r]
+  
+  return( c( cons_b,b_down,b_up,cons_i,i_down,i_up,cons_d,d_down,d_up)  )
   
 }
