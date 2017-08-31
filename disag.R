@@ -4,13 +4,91 @@ b=c(10,5)
 
 time_exp = read.table('/home/pant/Desktop/disaggregation/time_exp',header=TRUE)
 time_exp = as.matrix(time_exp/rowSums(time_exp))
-#time_exp = matrix(1/24,5,24)
+
 val_exp = as.matrix(read.table('/home/pant/Desktop/disaggregation/val_exp',header=TRUE))
 
-cond_like = function(cons,vals,means,stds,b){
+vals_from_survey = function(user,surv){
+  us_surv = surv[surv$SWM.ID==user$id,]
+  val_exp = matrix(0,5,11)
+  val_exp[1,] = make_val_distr(us_surv$Number.of.showers.taken.in.your.household.per.week./7,1.5)
+  val_exp[2,] = make_val_distr(us_surv$Number.of.baths.taken.in.your.household.per.month./30,1.5)
+  val_exp[3,] = make_val_distr(us_surv$Toilet.flushes.in.your.household.per.day.,2)
+  val_exp[4,] = make_val_distr(us_surv$How.many.times.is.the.washing.machine.used.per.week./7,0.8)
+  val_exp[5,] = make_val_distr(us_surv$How.many.times.is.the.dishwasher.used.per.week./7,0.8)
+  return(val_exp)
+}
+
+make_val_distr = function(val,sigm=2){
+  row = c()
+  for(i in 0:10)
+    row[i+1]=exp(-(i-val)**2/(2*sigm**2))
+  return(row/sum(row))
+}
+
+add_all_noise = function(r=0.2){
+  
+  means=c(50,80,8,56,25)
+  stds=c(20,5,1,10,7)
+  b=c(10,5)
+  
+  time_exp = read.table('/home/pant/Desktop/disaggregation/time_exp',header=TRUE)
+  time_exp = as.matrix(time_exp/rowSums(time_exp))
+  val_exp = as.matrix(read.table('/home/pant/Desktop/disaggregation/val_exp',header=TRUE))
+  
+  means<<-add_noise_vert(means,r)
+  stds<<-add_noise_vert(stds,r)
+  b<<-add_noise_vert(b,r)
+  fix_vert_noise()
+   
+  #time_exp <<- matrix(1/24,5,24)
+  #val_exp <<- matrix(1/8,5,8)
+  val_exp<<-add_noise_hor(val_exp,r)
+  time_exp<<-add_noise_hor(time_exp,r)
+  
+}
+
+fix_vert_noise = function(){
+  for(i in 1:length(stds)){
+    if(stds[i]<=0)
+      stds[i]=3
+    if(means[i]-2*stds[i]<0)
+      means[i] = 2*stds[i]
+  }
+  if(b[2]<0)
+    b[2]=3
+  if(b[1]-2*b[2]<0)
+    b[1] = 2*b[2]
+}
+
+add_noise_vert = function(vals,r){
+    
+  for(i in 1:length(vals))
+    vals[i] = vals[i] + rnorm(1)*r*vals[i]
+  
+  return(vals)
+  
+}
+
+add_noise_hor = function(vals,r){
+  
+  for(i in 1:dim(vals)[1])
+    for(j in 1:dim(vals)[2])
+      vals[i,j] = vals[i,j] + rnorm(1)*r*(vals[i,j]+0.01)
+  
+  for(i in 1:dim(vals)[1]){
+    if(min(vals[i,])<0)
+      vals[i,] = vals[i,] - min(vals[i,])
+    vals[i,] = vals[i,]/sum(vals[i,])  
+  }
+  
+  return(vals)
+  
+}
+
+cond_like = function(cons,vals,means,stds,b,loglike=FALSE){
   std_sum = sqrt( (sum(vals*stds)+b[2])**2 )
   mean_sum = sum(vals*means)+b[1]
-  return(dnorm((cons-mean_sum)/std_sum))
+  return(dnorm((cons-mean_sum)/std_sum,log=loglike))
 }
 
 prior = function(vals,time_occ,val_exp,time_exp,prevs){
@@ -47,15 +125,6 @@ norm_factor = function(cons,all_events,means,stds,b,time,val_exp,time_exp,prevs)
   return(sum)
 }
 
-joint_prob=function(data,all_events,means,stds,b,val_exp,time_exp){
-  prob = 1
-  for(i in 1:length(data)){
-    prevs = get_prevs(data,i,length(data[[1]]$events))
-    prob = prob * cond_like(data[[i]]$cons,data[[i]]$event,means,stds,b) * prior(data[[i]]$event,data[[i]]$time,val_exp,time_exp,prevs) / norm_factor(data[[i]]$cons,all_events,means,stds,b,data[[i]]$time,val_exp,time_exp,prevs)
-  }
-  return(prob)
-}
-
 get_prevs = function(data,i,n){
   if (i==1)
     return(1:n*0)
@@ -75,6 +144,7 @@ argmax = function(all_events,cons,time,means,stds,b,val_exp,time_exp,prevs=1:dim
     probs = c(probs,num)
     norm = norm+num
   }
+  probs = probs / norm
   return(all_events[which(probs==max(probs))[1],])
 }
 
@@ -94,7 +164,16 @@ disaggregate_user = function(user,all_events,means,stds,b,val_exp,time_exp){
   return(user)
 }
 
-all_probs = function(all_events,cons,time,means,stds,b,val_exp,time_exp,prevs){
+calc_probs = function(day,time_exp){
+  probs = c()
+  for(event in day){
+    probs = c(probs, sum(time_exp[event$time]))
+  }
+  probs = c(probs,1-sum(probs))
+  return(probs)
+}
+
+all_probs = function(all_events,cons,time,means,stds,b,val_exp,time_exp,prevs=1:dim(all_events)[2]*0){
   probs = c()
   norm = 0
   for(i in 1:dim(all_events)[1]){
@@ -102,7 +181,106 @@ all_probs = function(all_events,cons,time,means,stds,b,val_exp,time_exp,prevs){
     probs = c(probs,num)
     norm = norm+num
   }
-  return(probs)
+  probs = probs / norm
+  return(all_events[which(probs==max(probs))[1],])
+}
+
+joint_like=function(x,day,means,stds,b,val_exp,time_exp){
+  like = 0
+  for(j in 1:length(day))
+    like = like + cond_like(day[[j]]$cons,x[,j],means,stds,b,log=TRUE) 
+  
+  for(i in 1:dim(x)[1]){
+    vdi = sum(x[i,])
+    if(vdi<=10)
+      like = like + log(val_exp[i,vdi+1])
+    else
+      like = like + log(0)
+    pt = calc_probs(day,time_exp)
+    like = like + dmultinom(x=c(x[i,],0),prob=pt,log=TRUE)
+  }
+  return(like)
+}
+
+prune_cond_like = function(thresh,cons,all_events,means,stds,b){
+  good = list()
+  li = 1
+  for(i in 1:dim(all_events)[1]){
+    like = cond_like(cons,all_events[i,],means,stds,b,log=TRUE)
+    if(like>thresh){
+      good[[li]] = all_events[i,]
+      li = li+1
+    }
+  }
+  return(good)
+}
+
+put_events = function(x,day){
+  for(j in 1:length(day))
+    day[[j]]$events = x[,j]
+  return(day)
+}
+
+find_thresh = function(day,means,stds,b,val_exp,time_exp){
+  x = c()
+  for(e in day)
+    x = cbind(x,e$events)
+  return(joint_like(x,day,means,stds,b,val_exp,time_exp))
+}
+
+events_too_many = function(good){
+  prod = 1
+  for(g in good)
+    prod=prod*length(g)
+  if(prod>10000)
+    return(TRUE)
+  else
+    return(FALSE)
+}
+
+day_events_to_x = function(day){
+  x = c()
+  for(e in day)
+    x = cbind(x,e$events)
+  return(x)
+}
+
+prune_search_day = function(day,all_events,means,stds,b, thresh){
+  
+  good = list()
+  for(i in 1:length(day))
+    good[[i]] = prune_cond_like(thresh, day[[i]]$cons,all_events , means ,stds, b )
+  if(events_too_many(good))
+    return(list(day_events_to_x(day),thresh,0))
+  pruned_events = as.matrix(expand.grid(good))
+  gain = 1-dim(pruned_events)[1]/(48**length(day))
+  max_like = -Inf
+  max_event = 0
+  for(i in 1:dim(pruned_events)[1]){
+    x = matrix(unlist(pruned_events[i,]),nrow=5)
+    like = joint_like(x ,day,means ,stds,b,val_exp,time_exp)
+    if (like>max_like){
+      max_like = like 
+      max_event = x
+    }
+  }
+  return(list(max_event,max_like,gain))
+  
+}
+
+prune_disaggregate = function(user,all_events,means,stds,b,val_exp,time_exp){
+  gains = c()
+  i=1
+  for(i in 1:length(user$days)){
+   # print(i)
+    thresh = find_thresh(user$days[[i]],means,stds,b,val_exp,time_exp)
+    res = prune_search_day(user$days[[i]],all_events,means,stds,b,thresh)
+    user$days[[i]] = put_events(res[[1]],user$days[[i]])
+    gains = c(gains,res[[3]])
+    i=i+1
+  }
+  print(mean(gains))
+  return(user)
 }
 
 get_patterns = function(user,thresh=10){
@@ -200,8 +378,8 @@ make_days = function(patterns){
   return(days)
 }
 
-is_very_large = function(pat){
-  if( difftime(pat$end_date,pat$start_date,units='hours') > 8)
+is_very_large = function(pat,thresh=8){
+  if( difftime(pat$end_date,pat$start_date,units='hours') > thresh)
     return(TRUE)
   else
     return(FALSE)
@@ -357,13 +535,16 @@ put_days_on_user = function(user){
   return(user)
 }
 
-recall = function(user){
+recall = function(user,r){
+  start = round(length(user$days)*r)
   showers = user$shower_loc
   got = 0
   all = 0
   sh_lengths = c()
   pr_lengths = c()
   for(i in seq(1,length(showers),2)){
+    if(showers[i]<start)
+      next
     events = user$days[[showers[i]]][[showers[i+1]]]$events
     if(events[1]>0){
       got=got+1
@@ -393,18 +574,20 @@ expected_survey = function(user,surv){
   return(week_exp*swm_period)
 }
 
-precision = function(user,surv){
+precision = function(user,surv,r){
   pred = 0
   all = 0
   dupl = 0
-  for(day in user$days)
-    for(pat in day){
-      if(as.numeric(pat$events[1])>0)
-        pred=pred+1
-      dupl = dupl + as.numeric(pat$events[1])
+  for(i in round(length(user$days)*r):length(user$days))
+    for(pat in user$days[[i]]){
+      if(!is.na(pat$events[1])){
+        if(as.numeric(pat$events[1])>0)
+          pred=pred+1
+        dupl = dupl + as.numeric(pat$events[1])
+      }
       all=all+1
     }
-  exp = expected_showers(user)
+  exp = expected_showers(user)*(1-r)
   act = sum(user$showers$volume>10)
   exp_surv = expected_survey(user,surv)
   return(c(act,exp,exp_surv,pred,dupl,all))
@@ -454,27 +637,44 @@ sh_weeks_dev = function(sh){
   return(as.numeric(difftime(end,start,units='weeks')))
 }
 
-run_experiments = function(users,surv){
+run_experiments = function(users,surv,r=0.5){
   results = c()
+  results_b = c()
+  results_p = c()
+  results_mc = c()
   for(i in 1:length(users)){
     print(i)
     if(length(users[[i]]$shower_loc)<10)
        next
-    user = disaggregate_user(users[[i]],all_events,means,stds,b,val_exp,time_exp)
-    results = c(results , precision(user,surv),recall(user))
-    print(t(matrix(results,nrow=11)))
+  #  user = disaggregate_user(users[[i]],all_events,means,stds,b,val_exp,time_exp)
+  #  results = c(results , precision(user,surv,r),recall(user,r))
+  #  print(t(matrix(results,nrow=11)))
+    
+    user_b = baseline_disag(users[[i]])
+    results_b = c(results_b,precision(user_b,surv,r),recall(user_b,r))
+    print(t(matrix(results_b,nrow=11)))
+    
+  #  user_pr = prune_disaggregate(user,all_events,means,stds,b,val_exp,time_exp)
+  #  results_p = c(results_p , precision(user_pr,surv,r),recall(user_pr,r))
+  #  print(t(matrix(results_p,nrow=11)))
+    
+  #  user_mc = mcmc_disaggregate_user(user,all_events,means,stds,b,val_exp,time_exp)
+  #  results_mc = c(results_mc , precision(user_mc,surv,r),recall(user_mc,r))
+  #  print(t(matrix(results_mc,nrow=11)))
   }
-  return(t(matrix(results,nrow=11)))
+  return(list(t(matrix(results_b,nrow=11))))
+  #return(list(t(matrix(results,nrow=11)),t(matrix(results_b,nrow=11))))
+  #return(list(t(matrix(results,nrow=11)),t(matrix(results_p,nrow=11)),t(matrix(results_mc,nrow=11)),t(matrix(results_b,nrow=11))))
 }
 
-exp_accuracy = function(res,tr1=0.5){
+exp_accuracy = function(res){
   
-  t1 = tr1*res[4]
+  t1 = res[2]
   
-  tpr = res[6]/res[5]
+  tpr = res[8]/res[7]
   fnr = 1-tpr
-  p1  = res[3]
-  p0  = res[4] - res[3]
+  p1  = res[4]
+  p0  = res[6] - res[4]
   
   if(t1*tpr<p1)
     tp = t1*tpr
@@ -553,7 +753,6 @@ pattern_stats = function(user){
 }
 
 shower_stats = function(sh){
-  
   print(id_expect(sh))
   sh = sh[sh$volume>10 & sh$history=='false',]
   hours = as.numeric(format(as.POSIXct(sh$local.datetime,format='%d/%m/%Y %H:%M:%S',tz='CET'),format='%H'))
@@ -561,18 +760,253 @@ shower_stats = function(sh){
   hist(sh$volume,20)
   print(mean(sh$volume))
   print(sd(sh$volume))
-  
 }
+
 scores = function(res){
+  #res = res[[1]]
+  res = res[res[,7]>=5,]
   scores = matrix(0,nrow=dim(res)[1],4)
   scores[,1] = res[,8]/res[,7]
   scores[,2] = res[,4]/res[,6]
   scores[,3] = res[,5]/res[,2]
-  scores[,4] = res[,11]
-  print(mean(scores[,1]))
-  print(mean(scores[,2]))
-  print(mean(scores[,3]))
-  print(mean(scores[,4]))
+  #scores[,3] = abs(1-res[,5]/res[,2])
+  scores[,4] = res[,10]
+#  print(mean(scores[,1]))
+#  print(mean(scores[,2]))
+#  print(mean(scores[,3]))
+#  print(mean(scores[,4]))
   return(scores)
+#  return(c(mean(scores[,1]),mean(scores[,2]),mean(scores[,3]),mean(scores[,4])))
 }
 
+get_others = function(day,j){
+  prevs = 0
+  for(i in 1:length(day))
+    prevs = prevs + day[[i]]$events
+  prevs = prevs - day[[j]]$events
+  return(prevs)
+}
+
+calc_all_cond_probs = function(day,j,all_events,means,stds,b,val_exp,time_exp){
+  probs = c()
+  norm = 0
+  prevs = get_others(day,j)
+  cons = day[[j]]$cons
+  time = day[[j]]$time
+  for(i in 1:dim(all_events)[1]){
+    num = cond_like(cons,all_events[i,],means,stds,b)*prior(all_events[i,],time,val_exp,time_exp,prevs)
+    probs = c(probs,num)
+    norm = norm+num
+  }
+  probs = probs / norm
+  return(probs)
+}
+
+cond_sample = function(day,j,all_events,means,stds,b,val_exp,time_exp){
+  all_probs = calc_all_cond_probs(day,j,all_events,means,stds,b,val_exp,time_exp)
+  return(all_events[which(cumsum(all_probs)>runif(1))[1],])
+}
+
+copy_events = function(day){
+  day_events = c()
+  for(pat in day)
+    day_events = c(day_events,pat$events)
+  return(day_events)
+}
+
+day_mcmc = function(day,k=110,all_events,means,stds,b,val_exp,time_exp){
+  m = length(day)
+  n = length(day[[1]]$events)
+  lot = matrix(0,k,n*m)
+  for(i in 1:k){
+    for(j in 1:m)
+      day[[j]]$events=cond_sample(day,j,all_events,means,stds,b,val_exp,time_exp)
+    lot[i,] = copy_events(day)
+  }
+  return(lot)
+}
+
+max_prob = function(lot,burn){
+  ind = table(apply(lot[-(1:burn),], 1, paste, collapse = "/"))
+  ind = which.max(ind)[1]
+  return(as.numeric(strsplit(names(ind), "/")[[1]])) 
+}
+
+mcmc_disaggregate_day = function(day,all_events,means,stds,b,val_exp,time_exp){
+  m = length(day)
+  n = length(day[[1]]$events)
+  lot = day_mcmc(day,k=60,all_events,means,stds,b,val_exp,time_exp)
+  max = max_prob(lot,burn=10)
+  for (j in 1:m){
+    day[[j]]$events = max[((j-1)*n+1):(j*n)]
+  }
+  return(day)
+}
+
+mcmc_disaggregate_user = function(user,all_events,means,stds,b,val_exp,time_exp){
+  for(i in 1:length(user$day)){
+    print(i)
+    user$days[[i]] = mcmc_disaggregate_day(user$days[[i]],all_events,means,stds,b,val_exp,time_exp)
+  }
+  return(user)
+}
+
+surv_experiments = function(users,surv,r=0.5){
+  results = c()
+  results_p = c()
+  results_mc = c()
+  for(i in 1:length(users)){
+    print(i)
+    if(length(users[[i]]$shower_loc)<10)
+      next
+    val_exp <<- vals_from_survey(user,surv)
+    user = disaggregate_user(users[[i]],all_events,means,stds,b,val_exp,time_exp)
+    results = c(results , precision(user,surv,r),recall(user,r))
+    print(t(matrix(results,nrow=11)))
+    
+    #user_pr = prune_disaggregate(user,all_events,means,stds,b,val_exp,time_exp)
+    #results_p = c(results_p , precision(user_pr,surv),recall(user_pr))
+    #print(t(matrix(results_p,nrow=11)))
+    
+    #user_mc = mcmc_disaggregate_user(user,all_events,means,stds,b,val_exp,time_exp)
+    #results_mc = c(results_mc , precision(user_mc,surv),recall(user_mc))
+    #print(t(matrix(results_mc,nrow=11)))
+    
+  }
+  return(t(matrix(results,nrow=11)))
+  #return(list(t(matrix(results,nrow=11)),t(matrix(results_p,nrow=11)),t(matrix(results_mc,nrow=11))))
+}
+
+noisy_experiments = function(users,surv,r=0.1){
+  all_res = list()
+  for(i in 1:100){
+    print('iter')
+    print(i)
+    add_all_noise(r)
+    all_res[[i]] = run_experiments(users,surv,0.5)
+  }
+  return(all_res)
+}
+
+mean_noise_res = function(noise_res){
+  sc = scores(noise_res[[1]])
+  for(i in 2:length(noise_res))
+    sc = rbind(sc,colMeans(scores(noise_res[[i]]),na.rm=TRUE))
+  return(colMeans(sc,na.rm=TRUE))
+}
+
+disaggregate_user_base = function(user){
+  days = user$days
+  for(i in 1:length(days))
+    days[[i]]=disag_day_base(days[[i]])
+  user$days=days
+  return(user)
+}
+
+pat_feats = function(user,i,j){
+  pat=user$days[[i]][[j]]
+  sh = t(matrix(user$shower_loc,nrow=2))
+  shi=sum(apply(sh,1,function(x) all.equal(x,c(i,j)))==TRUE)
+  return(c(as.numeric(format(pat$start_date,'%H')),length(pat$time),pat$cons,shi))
+}
+
+unwarp_patterns = function(user,r){
+  lot = c()
+  for(i in 1:(length(user$days)*r))
+    for(j in 1:length(user$days[[i]]))
+      lot = c(lot, pat_feats(user,i,j))
+  d = t(matrix(lot,nrow=4))
+  norm = t(matrix(nrow=2,c(mean(d[,1]),sd(d[,1]),mean(d[,2]),sd(d[,2]),mean(d[,3]),sd(d[,3]))))
+  d[,1] = (d[,1]-norm[1,1])/norm[1,2]
+  d[,2] = (d[,2]-norm[2,1])/norm[2,2]
+  d[,3] = (d[,3]-norm[3,1])/norm[3,2]
+  return(list(d,norm))
+}
+
+show_in_clus = function(d,clus){
+  sho = c()
+  all = c()
+  for(i in 1:length(unique(clus$cluster))){
+    all = c(all, sum(clus$cluster==i) )
+    sho = c(sho, sum(d[clus$cluster==i,4]))
+  }
+  return(cbind(sho,all))
+}
+
+select_clusters = function(sc,user,r){
+  n = expected_showers(user)*r
+  m = sum(sc[,2])
+  p = 1/m
+  exp_pats = (1-(1-p)**n)*m
+  ord = rev(order(sc[,1]))
+  good_cl = c()
+  tot = 0
+  for(cl in ord){
+    if(tot>=exp_pats)
+      break
+    else{
+     tot=tot+sc[cl,2]
+     good_cl = c(good_cl,cl)
+    }
+  }
+  return(good_cl)
+}
+
+classify_pattern = function(point,clus,good_cl){
+  cl = as.numeric( which.min( apply(clus$centers,1,function(x) x %*% point) ) )
+  if(cl %in% good_cl)
+    return(3)
+  else
+    return(0)
+}
+
+pat_feats_norm = function(user,i,j,norm){
+  pat=user$days[[i]][[j]]
+  sh = t(matrix(user$shower_loc,nrow=2))
+  if (any(apply(sh,1,function(x) all.equal(x,c(i,j)))==TRUE))
+    shi = TRUE
+  else
+    shi = FALSE
+  res = c(as.numeric(format(pat$start_date,'%H')),length(pat$time),pat$cons)
+  res[1] = (res[1] - norm[1,1])/norm[1,2]
+  res[2] = (res[2] - norm[2,1])/norm[2,2]
+  res[3] = (res[3] - norm[3,1])/norm[3,2]
+  return(res)
+}
+
+baseline_disag = function(user,r=0.5,k=12){
+  
+  res  = unwarp_patterns(user,r)
+  clus = kmeans(res[[1]][,1:3],k)
+  norm = res[[2]]
+  sc = show_in_clus(res[[1]],clus)
+  good_cl = select_clusters(sc,user,r)
+  
+  for(i in round(length(user$days)*r):(length(user$days)))
+    for(j in 1:length(user$days[[i]])){
+      point = pat_feats_norm(user,i,j,norm)
+      ev = classify_pattern(point,clus,good_cl)
+      user$days[[i]][[j]]$events = c(ev,0,0,0,0)
+    }
+    
+  return(user)
+        
+}
+
+pats_per_day = function(user){
+  lot = c()
+  for(day in user$days)
+    lot = c(lot, length(pat$time))
+    #for(pat in day)
+    #  lot = c(lot, length(pat$time))
+  return(lot)
+}
+
+mean_pats_user = function(users){
+
+  lot = c()
+  for(user in users)
+    lot = c(lot,mean(pats_per_day(user)))
+  return(lot)
+  
+}
